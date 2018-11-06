@@ -299,9 +299,12 @@ class TMC2130Stepper : public TMCStepper {
 		// Function aliases
 	
 		void tmc2130_set_wave(uint8_t amp, uint8_t fac200);
-
+		uint32_t tmc2130_wr_MSLUTSTART(uint8_t start_sin, uint8_t start_sin90);
+		uint32_t tmc2130_wr_MSLUTSEL(uint8_t x1, uint8_t x2, uint8_t x3, uint8_t w0, uint8_t w1, uint8_t w2, uint8_t w3);
+		uint32_t tmc2130_wr_MSLUT(uint8_t i, uint32_t val);
+	
 		uint8_t status_response;
-
+	
 	protected:
 		void write(uint8_t addressByte, uint32_t config);
 		uint32_t read(uint8_t addressByte);
