@@ -297,6 +297,8 @@ class TMC2130Stepper : public TMCStepper {
 		uint32_t LOST_STEPS();
 
 		// Function aliases
+	
+		void tmc2130_set_wave(uint8_t amp, uint8_t fac200);
 
 		uint8_t status_response;
 
