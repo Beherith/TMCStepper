@@ -206,3 +206,250 @@ uint8_t TMC2130Stepper::sg_current_decrease() {
   }
   return 0;
 }
+
+
+#define TMC2130_WAVE_FAC200_MIN 180
+#define TMC2130_WAVE_FAC200_MAX 250
+#define TMC2130_WAVE_FAC200_STP 1
+
+#define TMC2130_REG_MSLUT0 0x60
+#define TMC2130_REG_MSLUTSEL 0x68
+#define TMC2130_REG_MSLUTSTART 0x69
+
+
+
+uint32_t tmc2130_wr_MSLUTSTART(uint8_t start_sin, uint8_t start_sin90)
+{
+	uint32_t val = 0;
+	val |= (uint32_t)start_sin;
+	val |= ((uint32_t)start_sin90) << 16;
+	//tmc2130_wr(axis, TMC2130_REG_MSLUTSTART, val);
+  write(TMC2130_REG_MSLUTSTART, val);
+  return val;
+	//printf_P(PSTR("MSLUTSTART=%08lx (start_sin=%d start_sin90=%d)\n"), val, start_sin, start_sin90);
+}
+
+uint32_t tmc2130_wr_MSLUTSEL(uint8_t x1, uint8_t x2, uint8_t x3, uint8_t w0, uint8_t w1, uint8_t w2, uint8_t w3)
+{
+	uint32_t val = 0;
+	val |= ((uint32_t)w0);
+	val |= ((uint32_t)w1) << 2;
+	val |= ((uint32_t)w2) << 4;
+	val |= ((uint32_t)w3) << 6;
+	val |= ((uint32_t)x1) << 8;
+	val |= ((uint32_t)x2) << 16;
+	val |= ((uint32_t)x3) << 24;
+	write(TMC2130_REG_MSLUTSEL, val);
+  return val;
+	//printf_P(PSTR("MSLUTSEL=%08lx (x1=%d x2=%d x3=%d w0=%d w1=%d w2=%d w3=%d)\n"), val, x1, x2, x3, w0, w1, w2, w3);
+}
+
+uint32_t tmc2130_wr_MSLUT(uint8_t i, uint32_t val)
+{
+	write(TMC2130_REG_MSLUT0 + (i & 7), val);
+  return val;
+	//printf_P(PSTR("MSLUT[%d]=%08lx\n"), i, val);
+}
+
+void TMC2130Stepper::tmc2130_set_wave(uint8_t amp, uint8_t fac200){
+// TMC2130 wave compression algorithm
+// optimized for minimal memory requirements
+	//printf_P(PSTR("tmc2130_set_wave %d %d\n"), axis, fac200);
+	if (fac200 < TMC2130_WAVE_FAC200_MIN) fac200 = 0;
+	if (fac200 > TMC2130_WAVE_FAC200_MAX) fac200 = TMC2130_WAVE_FAC200_MAX;
+	float fac = (float)fac200/200; //correction factor
+	uint8_t vA = 0;                //value of currentA
+	uint8_t va = 0;                //previous vA
+	uint8_t d0 = 0;                //delta0
+	uint8_t d1 = 1;                //delta1
+	uint8_t w[4] = {1,1,1,1};      //W bits (MSLUTSEL)
+	uint8_t x[3] = {255,255,255};  //X segment bounds (MSLUTSEL)
+	uint8_t s = 0;                 //current segment
+	int8_t b;                      //encoded bit value
+	uint8_t dA;                    //delta value
+	int i;                         //microstep index
+	uint32_t reg;                  //tmc2130 register
+	tmc2130_wr_MSLUTSTART(0, amp);
+	for (i = 0; i < 256; i++)
+	{
+		if ((i & 31) == 0)
+			reg = 0;
+		// calculate value
+		if (fac == 0) // default TMC wave
+			vA = (uint8_t)((amp+1) * sin((2*PI*i + PI)/1024) + 0.5) - 1;
+		else // corrected wave
+			vA = (uint8_t)(amp * pow(sin(2*PI*i/1024), fac) + 0.5);
+		dA = vA - va; // calculate delta
+		va = vA;
+		b = -1;
+		if (dA == d0) b = 0;      //delta == delta0 => bit=0
+		else if (dA == d1) b = 1; //delta == delta1 => bit=1
+		else
+		{
+			if (dA < d0) // delta < delta0 => switch wbit down
+			{
+				//printf("dn\n");
+				b = 0;
+				switch (dA)
+				{
+				case -1: d0 = -1; d1 = 0; w[s+1] = 0; break;
+				case  0: d0 =  0; d1 = 1; w[s+1] = 1; break;
+				case  1: d0 =  1; d1 = 2; w[s+1] = 2; break;
+				default: b = -1; break;
+				}
+				if (b >= 0) { x[s] = i; s++; }
+			}
+			else if (dA > d1) // delta > delta0 => switch wbit up
+			{
+				//printf("up\n");
+				b = 1;
+				switch (dA)
+				{
+				case  1: d0 =  0; d1 = 1; w[s+1] = 1; break;
+				case  2: d0 =  1; d1 = 2; w[s+1] = 2; break;
+				case  3: d0 =  2; d1 = 3; w[s+1] = 3; break;
+				default: b = -1; break;
+				}
+			    if (b >= 0) { x[s] = i; s++; }
+			}
+		}
+		if (b < 0) break; // delta out of range (<-1 or >3)
+		if (s > 3) break; // segment out of range (> 3)
+		//printf("%d\n", vA);
+		if (b == 1) reg |= 0x80000000;
+		if ((i & 31) == 31)
+			tmc2130_wr_MSLUT((uint8_t)(i >> 5), reg);
+		else
+			reg >>= 1;
+//		printf("%3d\t%3d\t%2d\t%2d\t%2d\t%2d    %08x\n", i, vA, dA, b, w[s], s, reg);
+	}
+	tmc2130_wr_MSLUTSEL(x[0], x[1], x[2], w[0], w[1], w[2], w[3]);
+
+/*
+//	printf_P(PSTR(" tmc2130_set_wave %d %d\n"), axis, fac200);
+	switch (fac200)
+	{
+	case 0: //default TMC wave 247/0
+		tmc2130_wr_MSLUTSTART(axis, 0, 247);
+		tmc2130_wr_MSLUT(axis, 0, 0xaaaab556);
+		tmc2130_wr_MSLUT(axis, 1, 0x4a9554aa);
+		tmc2130_wr_MSLUT(axis, 2, 0x24492929);
+		tmc2130_wr_MSLUT(axis, 3, 0x10104222);
+		tmc2130_wr_MSLUT(axis, 4, 0xf8000000);
+		tmc2130_wr_MSLUT(axis, 5, 0xb5bb777d);
+		tmc2130_wr_MSLUT(axis, 6, 0x49295556);
+		tmc2130_wr_MSLUT(axis, 7, 0x00404222);
+		tmc2130_wr_MSLUTSEL(axis, 2, 154, 255, 1, 2, 1, 1);
+		break;
+	case 210: //calculated wave 247/1.050
+		tmc2130_wr_MSLUTSTART(axis, 0, 247);
+		tmc2130_wr_MSLUT(axis, 0, 0x55294a4e);
+		tmc2130_wr_MSLUT(axis, 1, 0xa52a552a);
+		tmc2130_wr_MSLUT(axis, 2, 0x48949294);
+		tmc2130_wr_MSLUT(axis, 3, 0x81042222);
+		tmc2130_wr_MSLUT(axis, 4, 0x00000000);
+		tmc2130_wr_MSLUT(axis, 5, 0xdb6eef7e);
+		tmc2130_wr_MSLUT(axis, 6, 0x9295555a);
+		tmc2130_wr_MSLUT(axis, 7, 0x00408444);
+		tmc2130_wr_MSLUTSEL(axis, 3, 160, 255, 1, 2, 1, 1);
+		break;
+	case 212: //calculated wave 247/1.060
+		tmc2130_wr_MSLUTSTART(axis, 0, 247);
+		tmc2130_wr_MSLUT(axis, 0, 0x4a94948e);
+		tmc2130_wr_MSLUT(axis, 1, 0x94a952a5);
+		tmc2130_wr_MSLUT(axis, 2, 0x24925252);
+		tmc2130_wr_MSLUT(axis, 3, 0x10421112);
+		tmc2130_wr_MSLUT(axis, 4, 0xc0000020);
+		tmc2130_wr_MSLUT(axis, 5, 0xdb7777df);
+		tmc2130_wr_MSLUT(axis, 6, 0x9295556a);
+		tmc2130_wr_MSLUT(axis, 7, 0x00408444);
+		tmc2130_wr_MSLUTSEL(axis, 3, 157, 255, 1, 2, 1, 1);
+		break;
+	case 214: //calculated wave 247/1.070
+		tmc2130_wr_MSLUTSTART(axis, 0, 247);
+		tmc2130_wr_MSLUT(axis, 0, 0xa949489e);
+		tmc2130_wr_MSLUT(axis, 1, 0x52a54a54);
+		tmc2130_wr_MSLUT(axis, 2, 0x224a494a);
+		tmc2130_wr_MSLUT(axis, 3, 0x04108889);
+		tmc2130_wr_MSLUT(axis, 4, 0xffc08002);
+		tmc2130_wr_MSLUT(axis, 5, 0x6dbbbdfb);
+		tmc2130_wr_MSLUT(axis, 6, 0x94a555ab);
+		tmc2130_wr_MSLUT(axis, 7, 0x00408444);
+		tmc2130_wr_MSLUTSEL(axis, 4, 149, 255, 1, 2, 1, 1);
+		break;
+	case 215: //calculated wave 247/1.075
+		tmc2130_wr_MSLUTSTART(axis, 0, 247);
+		tmc2130_wr_MSLUT(axis, 0, 0x4a52491e);
+		tmc2130_wr_MSLUT(axis, 1, 0xa54a54a9);
+		tmc2130_wr_MSLUT(axis, 2, 0x49249494);
+		tmc2130_wr_MSLUT(axis, 3, 0x10421122);
+		tmc2130_wr_MSLUT(axis, 4, 0x00000008);
+		tmc2130_wr_MSLUT(axis, 5, 0x6ddbdefc);
+		tmc2130_wr_MSLUT(axis, 6, 0x94a555ad);
+		tmc2130_wr_MSLUT(axis, 7, 0x00408444);
+		tmc2130_wr_MSLUTSEL(axis, 4, 161, 255, 1, 2, 1, 1);
+		break;
+	case 216: //calculated wave 247/1.080
+		tmc2130_wr_MSLUTSTART(axis, 0, 247);
+		tmc2130_wr_MSLUT(axis, 0, 0x9494911e);
+		tmc2130_wr_MSLUT(axis, 1, 0x4a94a94a);
+		tmc2130_wr_MSLUT(axis, 2, 0x92492929);
+		tmc2130_wr_MSLUT(axis, 3, 0x41044444);
+		tmc2130_wr_MSLUT(axis, 4, 0x00000040);
+		tmc2130_wr_MSLUT(axis, 5, 0xaedddf7f);
+		tmc2130_wr_MSLUT(axis, 6, 0x94a956ad);
+		tmc2130_wr_MSLUT(axis, 7, 0x00808448);
+		tmc2130_wr_MSLUTSEL(axis, 4, 159, 255, 1, 2, 1, 1);
+		break;
+	case 218: //calculated wave 247/1.090
+		tmc2130_wr_MSLUTSTART(axis, 0, 247);
+		tmc2130_wr_MSLUT(axis, 0, 0x4a49223e);
+		tmc2130_wr_MSLUT(axis, 1, 0x4a52a529);
+		tmc2130_wr_MSLUT(axis, 2, 0x49252529);
+		tmc2130_wr_MSLUT(axis, 3, 0x08422224);
+		tmc2130_wr_MSLUT(axis, 4, 0xfc008004);
+		tmc2130_wr_MSLUT(axis, 5, 0xb6eef7df);
+		tmc2130_wr_MSLUT(axis, 6, 0xa4aaaab5);
+		tmc2130_wr_MSLUT(axis, 7, 0x00808448);
+		tmc2130_wr_MSLUTSEL(axis, 5, 153, 255, 1, 2, 1, 1);
+		break;
+	case 220: //calculated wave 247/1.100
+		tmc2130_wr_MSLUTSTART(axis, 0, 247);
+		tmc2130_wr_MSLUT(axis, 0, 0xa492487e);
+		tmc2130_wr_MSLUT(axis, 1, 0x294a52a4);
+		tmc2130_wr_MSLUT(axis, 2, 0x492494a5);
+		tmc2130_wr_MSLUT(axis, 3, 0x82110912);
+		tmc2130_wr_MSLUT(axis, 4, 0x00000080);
+		tmc2130_wr_MSLUT(axis, 5, 0xdb777df8);
+		tmc2130_wr_MSLUT(axis, 6, 0x252aaad6);
+		tmc2130_wr_MSLUT(axis, 7, 0x00808449);
+		tmc2130_wr_MSLUTSEL(axis, 6, 162, 255, 1, 2, 1, 1);
+		break;
+	case 222: //calculated wave 247/1.110
+		tmc2130_wr_MSLUTSTART(axis, 0, 247);
+		tmc2130_wr_MSLUT(axis, 0, 0x524910fe);
+		tmc2130_wr_MSLUT(axis, 1, 0xa5294a52);
+		tmc2130_wr_MSLUT(axis, 2, 0x24929294);
+		tmc2130_wr_MSLUT(axis, 3, 0x20844489);
+		tmc2130_wr_MSLUT(axis, 4, 0xc0004008);
+		tmc2130_wr_MSLUT(axis, 5, 0xdbbbdf7f);
+		tmc2130_wr_MSLUT(axis, 6, 0x252aab5a);
+		tmc2130_wr_MSLUT(axis, 7, 0x00808449);
+		tmc2130_wr_MSLUTSEL(axis, 7, 157, 255, 1, 2, 1, 1);
+		break;
+	case 224: //calculated wave 247/1.120
+		tmc2130_wr_MSLUTSTART(axis, 0, 247);
+		tmc2130_wr_MSLUT(axis, 0, 0x292223fe);
+		tmc2130_wr_MSLUT(axis, 1, 0x94a52949);
+		tmc2130_wr_MSLUT(axis, 2, 0x92524a52);
+		tmc2130_wr_MSLUT(axis, 3, 0x04222244);
+		tmc2130_wr_MSLUT(axis, 4, 0x00000101);
+		tmc2130_wr_MSLUT(axis, 5, 0x6dddefe0);
+		tmc2130_wr_MSLUT(axis, 6, 0x254aad5b);
+		tmc2130_wr_MSLUT(axis, 7, 0x00810889);
+		tmc2130_wr_MSLUTSEL(axis, 9, 164, 255, 1, 2, 1, 1);
+		break;
+	}*/
+}
+
+
