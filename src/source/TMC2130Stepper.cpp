@@ -218,18 +218,18 @@ uint8_t TMC2130Stepper::sg_current_decrease() {
 
 
 
-uint32_t tmc2130_wr_MSLUTSTART(uint8_t start_sin, uint8_t start_sin90)
+uint32_t TMC2130Stepper::tmc2130_wr_MSLUTSTART(uint8_t start_sin, uint8_t start_sin90)
 {
 	uint32_t val = 0;
 	val |= (uint32_t)start_sin;
 	val |= ((uint32_t)start_sin90) << 16;
 	//tmc2130_wr(axis, TMC2130_REG_MSLUTSTART, val);
-  write(TMC2130_REG_MSLUTSTART, val);
-  return val;
+  	write(TMC2130_REG_MSLUTSTART, val);
+  	return val;
 	//printf_P(PSTR("MSLUTSTART=%08lx (start_sin=%d start_sin90=%d)\n"), val, start_sin, start_sin90);
 }
 
-uint32_t tmc2130_wr_MSLUTSEL(uint8_t x1, uint8_t x2, uint8_t x3, uint8_t w0, uint8_t w1, uint8_t w2, uint8_t w3)
+uint32_t TMC2130Stepper::tmc2130_wr_MSLUTSEL(uint8_t x1, uint8_t x2, uint8_t x3, uint8_t w0, uint8_t w1, uint8_t w2, uint8_t w3)
 {
 	uint32_t val = 0;
 	val |= ((uint32_t)w0);
@@ -240,19 +240,20 @@ uint32_t tmc2130_wr_MSLUTSEL(uint8_t x1, uint8_t x2, uint8_t x3, uint8_t w0, uin
 	val |= ((uint32_t)x2) << 16;
 	val |= ((uint32_t)x3) << 24;
 	write(TMC2130_REG_MSLUTSEL, val);
-  return val;
+  	return val;
 	//printf_P(PSTR("MSLUTSEL=%08lx (x1=%d x2=%d x3=%d w0=%d w1=%d w2=%d w3=%d)\n"), val, x1, x2, x3, w0, w1, w2, w3);
 }
 
-uint32_t tmc2130_wr_MSLUT(uint8_t i, uint32_t val)
+uint32_t TMC2130Stepper::tmc2130_wr_MSLUT(uint8_t i, uint32_t val)
 {
 	write(TMC2130_REG_MSLUT0 + (i & 7), val);
-  return val;
+  	return val;
 	//printf_P(PSTR("MSLUT[%d]=%08lx\n"), i, val);
 }
 
-void TMC2130Stepper::tmc2130_set_wave(uint8_t amp, uint8_t fac200){
+void TMC2130Stepper::tmc2130_set_wave(uint8_t amp, uint8_t fac200)
 // TMC2130 wave compression algorithm
+// amp defaults to 247!, fac200 defaults to like 0?
 // optimized for minimal memory requirements
 	//printf_P(PSTR("tmc2130_set_wave %d %d\n"), axis, fac200);
 	if (fac200 < TMC2130_WAVE_FAC200_MIN) fac200 = 0;
